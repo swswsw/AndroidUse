@@ -151,7 +151,13 @@ class UIAgentAccessibilityService : AccessibilityService() {
         updateOverlay("Capturing screen...", currentStepCount)
         Log.d("UIAgentAccessibilityService", "Capturing screen for step $currentStepCount...")
         
-        val targetWindowId = rootInActiveWindow?.windowId ?: -1
+        // Find the target application window (skip our own overlays)
+        val windows = windows
+        val targetWindow = windows.find { 
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive 
+        } ?: windows.find { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        
+        val targetWindowId = targetWindow?.id ?: rootInActiveWindow?.windowId ?: -1
         
         captureScreenshot(mainExecutor, targetWindowId) { bitmap ->
             if (bitmap == null) {
@@ -373,11 +379,52 @@ class UIAgentAccessibilityService : AccessibilityService() {
     }
 
     fun performClickAt(x: Float, y: Float) {
-        val clickPath = Path()
-        clickPath.moveTo(x, y)
-        val gestureBuilder = GestureDescription.Builder()
-        gestureBuilder.addStroke(GestureDescription.StrokeDescription(clickPath, 0, 100))
-        dispatchGesture(gestureBuilder.build(), null, null)
+        serviceScope.launch {
+            Log.d("UIAgentAccessibilityService", "Performing click at ($x, $y) - Ghosting overlays")
+            setOverlaysTouchable(false)
+            delay(100) // Wait for WindowManager to update flags
+            
+            val clickPath = Path()
+            clickPath.moveTo(x, y)
+            val gestureBuilder = GestureDescription.Builder()
+            gestureBuilder.addStroke(GestureDescription.StrokeDescription(clickPath, 0, 100))
+            
+            dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                    Log.d("UIAgentAccessibilityService", "Gesture completed")
+                    setOverlaysTouchable(true)
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    Log.w("UIAgentAccessibilityService", "Gesture cancelled")
+                    setOverlaysTouchable(true)
+                }
+            }, null)
+        }
+    }
+
+    private fun setOverlaysTouchable(touchable: Boolean) {
+        Handler(Looper.getMainLooper()).post {
+            overlayView?.let { view ->
+                val params = view.layoutParams as WindowManager.LayoutParams
+                if (touchable) {
+                    params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                } else {
+                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                }
+                windowManager.updateViewLayout(view, params)
+            }
+            chatOverlayView?.let { view ->
+                val params = view.layoutParams as WindowManager.LayoutParams
+                if (touchable) {
+                    params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                } else {
+                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                }
+                windowManager.updateViewLayout(view, params)
+            }
+        }
     }
 
     private fun stopWithNotification(message: String) {
@@ -536,7 +583,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#EE111111"))
+                setColor(Color.parseColor("#99111111")) // Further reduced opacity to 60% just in case
                 cornerRadius = 24f
             }
             setPadding(20, 20, 20, 20)
@@ -673,17 +720,39 @@ class UIAgentAccessibilityService : AccessibilityService() {
     }
 
     fun performSwipe(startX: Float, startY: Float, endX: Float, endY: Float, duration: Long = 500L) {
-        val swipePath = Path()
-        swipePath.moveTo(startX, startY)
-        swipePath.lineTo(endX, endY)
-        val gestureBuilder = GestureDescription.Builder()
-        gestureBuilder.addStroke(GestureDescription.StrokeDescription(swipePath, 0, duration))
-        dispatchGesture(gestureBuilder.build(), null, null)
+        serviceScope.launch {
+            Log.d("UIAgentAccessibilityService", "Performing swipe from ($startX, $startY) to ($endX, $endY)")
+            setOverlaysTouchable(false)
+            delay(100)
+            
+            val swipePath = Path()
+            swipePath.moveTo(startX, startY)
+            swipePath.lineTo(endX, endY)
+            val gestureBuilder = GestureDescription.Builder()
+            gestureBuilder.addStroke(GestureDescription.StrokeDescription(swipePath, 0, duration))
+            
+            dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                    setOverlaysTouchable(true)
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    setOverlaysTouchable(true)
+                }
+            }, null)
+        }
     }
 
     fun getClickableElementsJson(): String {
-        val rootNode = rootInActiveWindow ?: return "[]"
-        // Ensure we are only traversing the target app's window
+        // Look for the application window specifically
+        val windows = windows
+        val targetWindow = windows.find { 
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive 
+        } ?: windows.find { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        
+        val rootNode = targetWindow?.root ?: rootInActiveWindow ?: return "[]"
+
         if (rootNode.packageName == packageName) {
             Log.w("UIAgentAccessibilityService", "Root node belongs to our service, skipping UI tree")
             return "[]"
