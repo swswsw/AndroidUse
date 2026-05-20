@@ -144,6 +144,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
         
         currentStepCount++
         if (currentStepCount > MAX_STEPS) {
+            updateOverlay("Timeout: MAX_STEPS", currentStepCount)
             stopWithNotification("Task timed out: Maximum steps ($MAX_STEPS) reached.")
             return
         }
@@ -208,6 +209,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
             if (actionContent == lastActionJson) {
                 repeatCount++
                 if (repeatCount >= MAX_REPEATS) {
+                    updateOverlay("Error: Loop detected", currentStepCount)
                     stopWithNotification("Agent is stuck in a loop. Same action repeated $MAX_REPEATS times.")
                     return
                 }
@@ -255,12 +257,14 @@ class UIAgentAccessibilityService : AccessibilityService() {
                 }
                 "done" -> {
                     Log.i("UIAgentAccessibilityService", "Task completed!")
+                    updateOverlay("Task Completed Successfully!", currentStepCount)
                     conversationHistory.add(ChatMessage("Task Completed Successfully!", false))
                     updateChatUI()
                     stopWithNotification("Task Completed Successfully!")
                 }
                 else -> {
                     Log.w("UIAgentAccessibilityService", "Unknown action: $action")
+                    updateOverlay("Error: Unknown action", currentStepCount)
                     conversationHistory.add(ChatMessage("Error: Unknown action received: $action", false))
                     updateChatUI()
                     stopWithNotification("Unknown action received: $action")
@@ -490,6 +494,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
             textSize = 18f
             setOnClickListener {
                 if (isProcessing) {
+                    updateOverlay("Stopped by user", currentStepCount)
                     stopWithNotification("Agent stopped by user.")
                 } else {
                     hideOverlay()
