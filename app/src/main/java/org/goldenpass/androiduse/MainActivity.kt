@@ -21,6 +21,8 @@ import android.widget.Toast
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.graphics.Color
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : Activity() {
     private lateinit var statusTextView: TextView
@@ -162,6 +164,17 @@ class MainActivity : Activity() {
         layout.addView(taskLabel)
         layout.addView(taskEditText)
         layout.addView(runTaskButton)
+
+        ViewCompat.setOnApplyWindowInsetsListener(layout) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(
+                50 + systemBars.left,
+                50 + systemBars.top,
+                50 + systemBars.right,
+                50 + systemBars.bottom
+            )
+            insets
+        }
 
         setContentView(layout)
     }

@@ -6,8 +6,11 @@ import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 class SettingsActivity : Activity() {
     private lateinit var securityManager: SecurityManager
@@ -84,6 +87,21 @@ class SettingsActivity : Activity() {
         layout.addView(anthropicKeyInput)
         layout.addView(saveButton)
 
-        setContentView(layout)
+        val scrollView = ScrollView(this).apply {
+            addView(layout)
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(scrollView) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(
+                50 + systemBars.left,
+                50 + systemBars.top,
+                50 + systemBars.right,
+                50 + systemBars.bottom
+            )
+            insets
+        }
+
+        setContentView(scrollView)
     }
 }
