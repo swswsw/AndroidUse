@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-class GeminiAgent(private val apiKey: String, modelName: String = "gemini-3.1-pro-preview") : IAgent {
+class GeminiAgent(private val apiKey: String, modelName: String = "gemini-3.5-flash") : IAgent {
     
     private val systemInstructions = """
         You are an expert Android UI Automation Agent.

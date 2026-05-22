@@ -125,7 +125,7 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         
         // Default model
-        updateAgent("gemini-3.1-pro-preview")
+        updateAgent("gemini-3.5-flash")
     }
 
     override fun onDestroy() {
