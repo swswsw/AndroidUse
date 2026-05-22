@@ -19,17 +19,43 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.FrameLayout
 import android.view.MotionEvent
-import android.widget.TextView
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.EditText
-import android.widget.ScrollView
 import android.widget.Toast
-import android.util.TypedValue
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,33 +64,48 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executor
+import kotlin.math.roundToInt
 
-class UIAgentAccessibilityService : AccessibilityService() {
+class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var agent: IAgent? = null
-    private var isProcessing = false
+    private var isProcessing by mutableStateOf(false)
     private lateinit var windowManager: WindowManager
     
-    private var overlayView: View? = null
-    private lateinit var statusTextView: TextView
-    private lateinit var stepTextView: TextView
-    private lateinit var modelTextView: TextView
-    private var currentModelName: String = ""
-    private var conversationHistory = mutableListOf<ChatMessage>()
-    private var chatOverlayView: View? = null
-    private var isChatVisible = false
-    private lateinit var chatMessageContainer: LinearLayout
-    private lateinit var chatScrollView: ScrollView
+    private var overlayComposeView: ComposeView? = null
+    private var currentModelName by mutableStateOf("")
+    private var conversationHistory = mutableStateListOf<ChatMessage>()
+    private var isChatVisible by mutableStateOf(false)
+    private var statusText by mutableStateOf("Initializing...")
+    private var currentStepCount by mutableStateOf(0)
 
-    private var currentStepCount = 0
+    private var currentStepCountInt = 0 // Internal count to match original
     private var lastActionJson: String? = null
     private var repeatCount = 0
     private val MAX_STEPS = 30
     private val MAX_REPEATS = 7
 
+    private var overlayX = 0f
+    private var overlayY = 100f
+
+    // Lifecycle components for ComposeView in Service
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val _viewModelStore = ViewModelStore()
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val viewModelStore: ViewModelStore get() = _viewModelStore
+    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+
     companion object {
         var instance: UIAgentAccessibilityService? = null
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -81,9 +122,15 @@ class UIAgentAccessibilityService : AccessibilityService() {
         Log.d("UIAgentAccessibilityService", "Service Connected")
         instance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         
         // Default model
         updateAgent("gemini-3.1-pro-preview")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
 
     fun updateAgent(modelName: String) {
@@ -122,7 +169,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
     fun startAgentLoop(taskDescription: String) {
         if (isProcessing) return
         isProcessing = true
-        currentStepCount = 0
+        currentStepCountInt = 0
         lastActionJson = null
         repeatCount = 0
         
@@ -142,15 +189,15 @@ class UIAgentAccessibilityService : AccessibilityService() {
     private suspend fun processNextStep() {
         if (!isProcessing) return
         
-        currentStepCount++
-        if (currentStepCount > MAX_STEPS) {
-            updateOverlay("Timeout: MAX_STEPS", currentStepCount)
+        currentStepCountInt++
+        if (currentStepCountInt > MAX_STEPS) {
+            updateOverlay("Timeout: MAX_STEPS", currentStepCountInt)
             stopWithNotification("Task timed out: Maximum steps ($MAX_STEPS) reached.")
             return
         }
 
-        updateOverlay("Capturing screen...", currentStepCount)
-        Log.d("UIAgentAccessibilityService", "Capturing screen for step $currentStepCount...")
+        updateOverlay("Capturing screen...", currentStepCountInt)
+        Log.d("UIAgentAccessibilityService", "Capturing screen for step $currentStepCountInt...")
         
         // Find the target application window (skip our own overlays)
         val windows = windows
@@ -178,8 +225,8 @@ class UIAgentAccessibilityService : AccessibilityService() {
             val uiTree = getClickableElementsJson()
             
             serviceScope.launch {
-                updateOverlay("Thinking...", currentStepCount)
-                val agentResponse = agent?.getNextAction(conversationHistory, softwareBitmap, uiTree)
+                updateOverlay("Thinking...", currentStepCountInt)
+                val agentResponse = agent?.getNextAction(conversationHistory.toList(), softwareBitmap, uiTree)
                 if (agentResponse != null) {
                     handleAgentAction(agentResponse)
                 } else {
@@ -206,10 +253,14 @@ class UIAgentAccessibilityService : AccessibilityService() {
                 updateChatUI()
             }
             val actionContent = JSONObject(json.toString()).apply { remove("thought") }.toString()
+            
+            Log.i("UIAgentAccessibilityService", "Agent Thought: $thought")
+            Log.d("UIAgentAccessibilityService", "Agent decided: $action")
+
             if (actionContent == lastActionJson) {
                 repeatCount++
                 if (repeatCount >= MAX_REPEATS) {
-                    updateOverlay("Error: Loop detected", currentStepCount)
+                    updateOverlay("Error: Loop detected", currentStepCountInt)
                     stopWithNotification("Agent is stuck in a loop. Same action repeated $MAX_REPEATS times.")
                     return
                 }
@@ -218,14 +269,11 @@ class UIAgentAccessibilityService : AccessibilityService() {
             }
             lastActionJson = actionContent
 
-            Log.i("UIAgentAccessibilityService", "Agent Thought: $thought")
-            Log.d("UIAgentAccessibilityService", "Agent decided: $action")
-
             when (action) {
                 "click" -> {
                     val x = json.getDouble("x").toFloat()
                     val y = json.getDouble("y").toFloat()
-                    updateOverlay("Clicking at ($x, $y)", currentStepCount)
+                    updateOverlay("Clicking at (${x.toInt()}, ${y.toInt()})", currentStepCountInt)
                     showVisualCue(x, y, Color.RED)
                     delay(800)
                     performClickAt(x, y)
@@ -234,7 +282,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
                 }
                 "type" -> {
                     val text = json.getString("text")
-                    updateOverlay("Typing: $text", currentStepCount)
+                    updateOverlay("Typing: $text", currentStepCountInt)
                     showTypeCue()
                     delay(800)
                     typeText(text)
@@ -246,7 +294,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
                     val startY = json.getDouble("startY").toFloat()
                     val endX = json.getDouble("endX").toFloat()
                     val endY = json.getDouble("endY").toFloat()
-                    updateOverlay("Swiping...", currentStepCount)
+                    updateOverlay("Swiping...", currentStepCountInt)
                     showVisualCue(startX, startY, Color.GREEN)
                     delay(500)
                     showVisualCue(endX, endY, Color.YELLOW)
@@ -257,14 +305,14 @@ class UIAgentAccessibilityService : AccessibilityService() {
                 }
                 "done" -> {
                     Log.i("UIAgentAccessibilityService", "Task completed!")
-                    updateOverlay("Task Completed Successfully!", currentStepCount)
+                    updateOverlay("Task Completed Successfully!", currentStepCountInt)
                     conversationHistory.add(ChatMessage("Task Completed Successfully!", false))
                     updateChatUI()
                     stopWithNotification("Task Completed Successfully!")
                 }
                 else -> {
                     Log.w("UIAgentAccessibilityService", "Unknown action: $action")
-                    updateOverlay("Error: Unknown action", currentStepCount)
+                    updateOverlay("Error: Unknown action", currentStepCountInt)
                     conversationHistory.add(ChatMessage("Error: Unknown action received: $action", false))
                     updateChatUI()
                     stopWithNotification("Unknown action received: $action")
@@ -374,7 +422,6 @@ class UIAgentAccessibilityService : AccessibilityService() {
                 val bitmap = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
                 callback(bitmap)
             }
-
             override fun onFailure(errorCode: Int) {
                 Log.e("UIAgentAccessibilityService", "Screenshot failed with error code: $errorCode")
                 callback(null)
@@ -387,12 +434,10 @@ class UIAgentAccessibilityService : AccessibilityService() {
             Log.d("UIAgentAccessibilityService", "Performing click at ($x, $y) - Ghosting overlays")
             setOverlaysTouchable(false)
             delay(100) // Wait for WindowManager to update flags
-            
             val clickPath = Path()
             clickPath.moveTo(x, y)
             val gestureBuilder = GestureDescription.Builder()
             gestureBuilder.addStroke(GestureDescription.StrokeDescription(clickPath, 0, 100))
-            
             dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
                     super.onCompleted(gestureDescription)
@@ -410,16 +455,7 @@ class UIAgentAccessibilityService : AccessibilityService() {
 
     private fun setOverlaysTouchable(touchable: Boolean) {
         Handler(Looper.getMainLooper()).post {
-            overlayView?.let { view ->
-                val params = view.layoutParams as WindowManager.LayoutParams
-                if (touchable) {
-                    params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                } else {
-                    params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                }
-                windowManager.updateViewLayout(view, params)
-            }
-            chatOverlayView?.let { view ->
+            overlayComposeView?.let { view ->
                 val params = view.layoutParams as WindowManager.LayoutParams
                 if (touchable) {
                     params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
@@ -441,286 +477,235 @@ class UIAgentAccessibilityService : AccessibilityService() {
     }
 
     private fun showOverlay() {
-        if (overlayView != null) return
+        if (overlayComposeView != null) return
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#CC222222"))
-                cornerRadius = 32f
-            }
-            setPadding(24, 16, 24, 16)
-        }
-
-        val topRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val dragHandle = TextView(this).apply {
-            text = "⠿"
-            setTextColor(Color.WHITE)
-            textSize = 24f
-            setPadding(0, 0, 20, 0)
-        }
-
-        modelTextView = TextView(this).apply {
-            text = "🤖 $currentModelName"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val chatButton = TextView(this).apply {
-            text = "💬"
-            textSize = 20f
-            setPadding(20, 0, 20, 0)
-            setOnClickListener {
-                toggleChat()
-            }
-        }
-
-        stepTextView = TextView(this).apply {
-            text = "Step 0/$MAX_STEPS"
-            setTextColor(Color.LTGRAY)
-            textSize = 14f
-            setPadding(20, 0, 20, 0)
-        }
-
-        val stopButton = Button(this).apply {
-            text = "■"
-            setBackgroundColor(Color.RED)
-            setTextColor(Color.WHITE)
-            textSize = 18f
-            setOnClickListener {
-                if (isProcessing) {
-                    updateOverlay("Stopped by user", currentStepCount)
-                    stopWithNotification("Agent stopped by user.")
-                } else {
-                    hideOverlay()
+        overlayComposeView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@UIAgentAccessibilityService)
+            setViewTreeViewModelStoreOwner(this@UIAgentAccessibilityService)
+            setViewTreeSavedStateRegistryOwner(this@UIAgentAccessibilityService)
+            
+            setContent {
+                MaterialTheme(
+                    colorScheme = darkColorScheme(
+                        primary = androidx.compose.ui.graphics.Color(0xFFBB86FC),
+                        surface = androidx.compose.ui.graphics.Color(0xCC222222),
+                        onSurface = androidx.compose.ui.graphics.Color.White
+                    )
+                ) {
+                    OverlayContent()
                 }
             }
-            // Make it square
-            val buttonSize = (40 * resources.displayMetrics.density).toInt()
-            layoutParams = LinearLayout.LayoutParams(buttonSize, buttonSize)
         }
-
-        topRow.addView(dragHandle)
-        topRow.addView(modelTextView)
-        topRow.addView(chatButton)
-        topRow.addView(stepTextView)
-        topRow.addView(stopButton)
-
-        statusTextView = TextView(this).apply {
-            text = "Initializing..."
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            setPadding(0, 8, 0, 0)
-        }
-
-        root.addView(topRow)
-        root.addView(statusTextView)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = 100
+            gravity = Gravity.TOP or Gravity.START
+            x = overlayX.roundToInt()
+            y = overlayY.roundToInt()
             width = (resources.displayMetrics.widthPixels * 0.95).toInt()
         }
 
-        dragHandle.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX: Int = 0
-            private var initialY: Int = 0
-            private var initialTouchX: Float = 0f
-            private var initialTouchY: Float = 0f
+        windowManager.addView(overlayComposeView, params)
+    }
 
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - initialTouchX).toInt()
-                        params.y = initialY + (event.rawY - initialTouchY).toInt()
-                        windowManager.updateViewLayout(root, params)
-                        
-                        // Sync chat overlay position
-                        if (isChatVisible) {
-                            updateChatPosition(params.x, params.y + root.height + 20)
+    @Composable
+    fun OverlayContent() {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
+                .padding(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    Icons.Default.DragHandle,
+                    contentDescription = "Drag",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .pointerInput(Unit) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                overlayX += dragAmount.x
+                                overlayY += dragAmount.y
+                                updateOverlayPosition()
+                            }
                         }
-                        return true
-                    }
+                )
+                Text(
+                    text = "🤖 $currentModelName",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { toggleChat() }) {
+                    Icon(Icons.Default.Chat, contentDescription = "Chat", tint = MaterialTheme.colorScheme.onSurface)
                 }
-                return false
+                Text(
+                    text = "Step $currentStepCount/$MAX_STEPS",
+                    fontSize = 12.sp,
+                    color = androidx.compose.ui.graphics.Color.LightGray,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+                IconButton(
+                    onClick = {
+                        if (isProcessing) {
+                            updateOverlay("Stopped by user", currentStepCountInt)
+                            stopWithNotification("Agent stopped by user.")
+                        } else {
+                            hideOverlay()
+                        }
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(containerColor = androidx.compose.ui.graphics.Color.Red)
+                ) {
+                    Icon(if (isProcessing) Icons.Default.Stop else Icons.Default.Close, contentDescription = "Stop", tint = androidx.compose.ui.graphics.Color.White)
+                }
             }
-        })
-
-        overlayView = root
-        try {
-            windowManager.addView(overlayView, params)
-        } catch (e: Exception) {
-            Log.e("UIAgentAccessibilityService", "Error adding overlay", e)
-        }
-    }
-
-    private fun toggleChat() {
-        if (isChatVisible) {
-            hideChatOverlay()
-        } else {
-            showChatOverlay()
-        }
-    }
-
-    private fun showChatOverlay() {
-        if (chatOverlayView != null) return
-        isChatVisible = true
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#99111111")) // Further reduced opacity to 60% just in case
-                cornerRadius = 24f
-            }
-            setPadding(20, 20, 20, 20)
-        }
-
-        chatScrollView = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (resources.displayMetrics.heightPixels * 0.4).toInt()
+            
+            Text(
+                text = statusText,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 4.dp)
             )
+
+            if (isChatVisible) {
+                ChatContent()
+            }
+        }
+    }
+
+    @Composable
+    fun ChatContent() {
+        var chatInput by remember { mutableStateOf("") }
+        val scrollState = rememberScrollState()
+        
+        LaunchedEffect(conversationHistory.size) {
+            scrollState.animateScrollTo(scrollState.maxValue)
         }
 
-        chatMessageContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        chatScrollView.addView(chatMessageContainer)
-
-        val inputRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 10, 0, 0)
-        }
-
-        val inputField = EditText(this).apply {
-            hint = "Send instruction..."
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val sendButton = Button(this).apply {
-            text = "SEND"
-            setOnClickListener {
-                val text = inputField.text.toString()
-                if (text.isNotBlank()) {
-                    conversationHistory.add(ChatMessage(text, true))
-                    inputField.setText("")
+        Column(
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .fillMaxWidth()
+                .heightIn(max = 300.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(scrollState)
+            ) {
+                conversationHistory.takeLast(10).forEach { msg ->
+                    Text(
+                        text = (if (msg.isUser) "👤 " else "🤖 ") + msg.text,
+                        color = if (msg.isUser) androidx.compose.ui.graphics.Color.Cyan else androidx.compose.ui.graphics.Color.White,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+            }
+            
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                TextField(
+                    value = chatInput,
+                    onValueChange = { chatInput = it },
+                    placeholder = { Text("Send instruction...", fontSize = 12.sp) },
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = androidx.compose.ui.graphics.Color.White,
+                        unfocusedTextColor = androidx.compose.ui.graphics.Color.White
+                    )
+                )
+                IconButton(onClick = {
+                    conversationHistory.clear()
                     updateChatUI()
-                    if (!isProcessing) {
-                        startAgentLoop(text)
+                    Toast.makeText(this@UIAgentAccessibilityService, "Chat Context Cleared", Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Clear", tint = androidx.compose.ui.graphics.Color.Gray)
+                }
+                IconButton(onClick = {
+                    if (chatInput.isNotBlank()) {
+                        val text = chatInput
+                        conversationHistory.add(ChatMessage(text, true))
+                        chatInput = ""
+                        updateChatUI()
+                        if (!isProcessing) {
+                            startAgentLoop(text)
+                        }
                     }
+                }) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = MaterialTheme.colorScheme.primary)
                 }
             }
         }
-
-        val clearButton = TextView(this).apply {
-            text = "🗑️"
-            textSize = 20f
-            setPadding(20, 0, 10, 0)
-            setOnClickListener {
-                conversationHistory.clear()
-                updateChatUI()
-                Toast.makeText(this@UIAgentAccessibilityService, "Chat Context Cleared", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        inputRow.addView(inputField)
-        inputRow.addView(clearButton)
-        inputRow.addView(sendButton)
-
-        root.addView(chatScrollView)
-        root.addView(inputRow)
-
-        val barParams = overlayView?.layoutParams as? WindowManager.LayoutParams
-        val params = WindowManager.LayoutParams(
-            (resources.displayMetrics.widthPixels * 0.95).toInt(),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, // Allow interaction with keyboard
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = barParams?.x ?: 0
-            y = (barParams?.y ?: 100) + (overlayView?.height ?: 200) + 20
-        }
-
-        chatOverlayView = root
-        windowManager.addView(chatOverlayView, params)
-        updateChatUI()
     }
 
-    private fun hideChatOverlay() {
-        chatOverlayView?.let {
-            windowManager.removeView(it)
-            chatOverlayView = null
-        }
-        isChatVisible = false
-    }
-
-    private fun updateChatPosition(x: Int, y: Int) {
-        chatOverlayView?.let {
-            val params = it.layoutParams as WindowManager.LayoutParams
-            params.x = x
-            params.y = y
-            windowManager.updateViewLayout(it, params)
-        }
-    }
-
-    private fun updateChatUI() {
-        Handler(Looper.getMainLooper()).post {
-            if (!::chatMessageContainer.isInitialized) return@post
-            chatMessageContainer.removeAllViews()
-            conversationHistory.takeLast(10).forEach { msg ->
-                val tv = TextView(this).apply {
-                    text = if (msg.isUser) "👤: ${msg.text}" else "🤖: ${msg.text}"
-                    setTextColor(if (msg.isUser) Color.CYAN else Color.WHITE)
-                    setPadding(0, 5, 0, 5)
-                    textSize = 13f
-                }
-                chatMessageContainer.addView(tv)
-            }
-            chatScrollView.post { chatScrollView.fullScroll(View.FOCUS_DOWN) }
+    private fun updateOverlayPosition() {
+        overlayComposeView?.let { view ->
+            val params = view.layoutParams as WindowManager.LayoutParams
+            params.x = overlayX.roundToInt()
+            params.y = overlayY.roundToInt()
+            windowManager.updateViewLayout(view, params)
         }
     }
 
     private fun hideOverlay() {
         hideChatOverlay()
-        overlayView?.let {
+        overlayComposeView?.let {
             try {
                 windowManager.removeView(it)
             } catch (e: Exception) {
                 Log.e("UIAgentAccessibilityService", "Error removing overlay", e)
             }
-            overlayView = null
+            overlayComposeView = null
         }
+    }
+
+    private fun toggleChat() {
+        isChatVisible = !isChatVisible
+        updateWindowFlags()
+    }
+
+    private fun hideChatOverlay() {
+        isChatVisible = false
+        updateWindowFlags()
+    }
+
+    private fun updateWindowFlags() {
+        overlayComposeView?.let { view ->
+            val params = view.layoutParams as WindowManager.LayoutParams
+            if (isChatVisible) {
+                // Remove FLAG_NOT_FOCUSABLE to allow keyboard
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else {
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL.inv()
+            }
+            windowManager.updateViewLayout(view, params)
+        }
+    }
+
+    private fun updateChatUI() {
+        // Compose handles this automatically via SnapshotStateList
     }
 
     private fun updateOverlay(status: String? = null, step: Int? = null, model: String? = null) {
         Handler(Looper.getMainLooper()).post {
-            if (overlayView == null) return@post
-            status?.let { statusTextView.text = it }
-            step?.let { stepTextView.text = "Step $it/$MAX_STEPS" }
-            model?.let { modelTextView.text = "🤖 $it" }
+            status?.let { statusText = it }
+            step?.let { currentStepCount = it }
+            model?.let { currentModelName = it }
         }
     }
 
@@ -729,13 +714,11 @@ class UIAgentAccessibilityService : AccessibilityService() {
             Log.d("UIAgentAccessibilityService", "Performing swipe from ($startX, $startY) to ($endX, $endY)")
             setOverlaysTouchable(false)
             delay(100)
-            
             val swipePath = Path()
             swipePath.moveTo(startX, startY)
             swipePath.lineTo(endX, endY)
             val gestureBuilder = GestureDescription.Builder()
             gestureBuilder.addStroke(GestureDescription.StrokeDescription(swipePath, 0, duration))
-            
             dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
                     super.onCompleted(gestureDescription)

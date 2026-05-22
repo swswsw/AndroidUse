@@ -1,107 +1,120 @@
 package org.goldenpass.androiduse
 
-import android.app.Activity
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
 
-class SettingsActivity : Activity() {
+class SettingsActivity : ComponentActivity() {
     private lateinit var securityManager: SecurityManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         securityManager = SecurityManager(this)
+        enableEdgeToEdge()
 
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 50, 50, 50)
-        }
-
-        val title = TextView(this).apply {
-            text = "API Key Settings"
-            textSize = 24f
-            setPadding(0, 0, 0, 40)
-        }
-
-        val geminiLabel = TextView(this).apply {
-            text = "Gemini API Key:"
-        }
-        val geminiKeyInput = EditText(this).apply {
-            hint = "Enter Gemini API Key"
-            setText(securityManager.getGeminiApiKey() ?: "")
-        }
-
-        val openAILabel = TextView(this).apply {
-            text = "OpenAI API Key:"
-            setPadding(0, 30, 0, 0)
-        }
-        val openAIKeyInput = EditText(this).apply {
-            hint = "Enter OpenAI API Key"
-            setText(securityManager.getOpenAIApiKey() ?: "")
-        }
-
-        val anthropicLabel = TextView(this).apply {
-            text = "Anthropic API Key:"
-            setPadding(0, 30, 0, 0)
-        }
-        val anthropicKeyInput = EditText(this).apply {
-            hint = "Enter Anthropic API Key"
-            setText(securityManager.getAnthropicApiKey() ?: "")
-        }
-
-        val saveButton = Button(this).apply {
-            text = "Save Keys"
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 50, 0, 0)
-            }
-            setOnClickListener {
-                val geminiKey = geminiKeyInput.text.toString().trim()
-                val openAIKey = openAIKeyInput.text.toString().trim()
-                val anthropicKey = anthropicKeyInput.text.toString().trim()
-
-                securityManager.setGeminiApiKey(geminiKey)
-                securityManager.setOpenAIApiKey(openAIKey)
-                securityManager.setAnthropicApiKey(anthropicKey)
-
-                Toast.makeText(this@SettingsActivity, "Keys saved securely", Toast.LENGTH_SHORT).show()
-                finish()
+        setContent {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = androidx.compose.ui.graphics.Color(0xFF6200EE),
+                    onPrimary = androidx.compose.ui.graphics.Color.White,
+                    secondary = androidx.compose.ui.graphics.Color(0xFF03DAC6)
+                )
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    SettingsScreen()
+                }
             }
         }
+    }
 
-        layout.addView(title)
-        layout.addView(geminiLabel)
-        layout.addView(geminiKeyInput)
-        layout.addView(openAILabel)
-        layout.addView(openAIKeyInput)
-        layout.addView(anthropicLabel)
-        layout.addView(anthropicKeyInput)
-        layout.addView(saveButton)
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun SettingsScreen() {
+        val context = LocalContext.current
+        var geminiKey by remember { mutableStateOf(securityManager.getGeminiApiKey() ?: "") }
+        var openAIKey by remember { mutableStateOf(securityManager.getOpenAIApiKey() ?: "") }
+        var anthropicKey by remember { mutableStateOf(securityManager.getAnthropicApiKey() ?: "") }
 
-        val scrollView = ScrollView(this).apply {
-            addView(layout)
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("API Key Settings") },
+                    navigationIcon = {
+                        IconButton(onClick = { finish() }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+            },
+            floatingActionButton = {
+                FloatingActionButton(onClick = {
+                    securityManager.setGeminiApiKey(geminiKey.trim())
+                    securityManager.setOpenAIApiKey(openAIKey.trim())
+                    securityManager.setAnthropicApiKey(anthropicKey.trim())
+                    Toast.makeText(context, "Keys saved securely", Toast.LENGTH_SHORT).show()
+                    finish()
+                }) {
+                    Icon(Icons.Default.Check, contentDescription = "Save")
+                }
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .padding(paddingValues)
+                    .padding(16.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                ApiKeyInput(
+                    label = "Gemini API Key",
+                    value = geminiKey,
+                    onValueChange = { geminiKey = it }
+                )
+                
+                ApiKeyInput(
+                    label = "OpenAI API Key",
+                    value = openAIKey,
+                    onValueChange = { openAIKey = it }
+                )
+                
+                ApiKeyInput(
+                    label = "Anthropic API Key",
+                    value = anthropicKey,
+                    onValueChange = { anthropicKey = it }
+                )
+                
+                Spacer(modifier = Modifier.height(80.dp)) // Space for FAB
+            }
         }
+    }
 
-        ViewCompat.setOnApplyWindowInsetsListener(scrollView) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(
-                50 + systemBars.left,
-                50 + systemBars.top,
-                50 + systemBars.right,
-                50 + systemBars.bottom
-            )
-            insets
-        }
-
-        setContentView(scrollView)
+    @Composable
+    fun ApiKeyInput(label: String, value: String, onValueChange: (String) -> Unit) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true
+        )
     }
 }

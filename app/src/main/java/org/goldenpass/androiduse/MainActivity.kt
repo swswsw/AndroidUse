@@ -1,65 +1,71 @@
 package org.goldenpass.androiduse
 
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.view.Gravity
-import android.view.View
-import android.view.accessibility.AccessibilityManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.Spinner
-import android.widget.TextView
 import android.widget.Toast
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.graphics.Color
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.OutlinedTextField
 
-class MainActivity : Activity() {
-    private lateinit var statusTextView: TextView
+class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 50, 50, 50)
+        enableEdgeToEdge()
+        setContent {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = androidx.compose.ui.graphics.Color(0xFF6200EE),
+                    onPrimary = androidx.compose.ui.graphics.Color.White,
+                    secondary = androidx.compose.ui.graphics.Color(0xFF03DAC6)
+                )
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    MainScreen()
+                }
+            }
         }
+    }
 
-        statusTextView = TextView(this).apply {
-            text = "Accessibility Service Enabled: ${isAccessibilityServiceEnabled(this@MainActivity)}"
-            textSize = 18f
-        }
-        
-        val settingsButton = Button(this).apply {
-            text = "Open Accessibility Settings"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun MainScreen() {
+        val context = LocalContext.current
+        val isAccessibilityEnabled by produceState(initialValue = isAccessibilityServiceEnabled(context)) {
+            while (true) {
+                value = isAccessibilityServiceEnabled(context)
+                delay(1000)
             }
         }
 
-        val apiSettingsButton = Button(this).apply {
-            text = "API Key Settings"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
-            }
-        }
-
-        val modelLabel = TextView(this).apply {
-            text = "Select Model:"
-            setPadding(0, 40, 0, 10)
-        }
-
-        val models = arrayOf(
+        val models = listOf(
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-preview",
             "gemini-3.1-flash-lite-preview",
@@ -78,130 +84,171 @@ class MainActivity : Activity() {
             "gpt-5.2-instant",
             "claude-opus-4-7",
             "claude-sonnet-4-6",
-            "claude-opus-4-6",
+            "claude-Haiku-4-6",
             "claude-opus-4-5",
             "claude-haiku-4-5",
             "claude-sonnet-4-5"
         )
 
-        val modelSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    val selectedModel = models[position]
-                    UIAgentAccessibilityService.instance?.updateAgent(selectedModel)
+        var selectedModel by remember { mutableStateOf(models[0]) }
+        var taskText by remember { mutableStateOf("go to contacts, and add a new contact John Smith with email johnsmith123@gmail.com") }
+        var expanded by remember { mutableStateOf(false) }
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("AndroidUse Agent") },
+                    actions = {
+                        IconButton(onClick = {
+                            context.startActivity(Intent(context, SettingsActivity::class.java))
+                        }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    }
+                )
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .padding(paddingValues)
+                    .padding(16.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Status Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isAccessibilityEnabled) 
+                            MaterialTheme.colorScheme.primaryContainer 
+                        else 
+                            MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = if (isAccessibilityEnabled) "Service Enabled" else "Service Disabled",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Open Accessibility Settings")
+                        }
+                    }
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+
+                // Model Selection
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedModel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Select Model") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryEditable, true)
+                            .fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        models.forEach { model ->
+                            DropdownMenuItem(
+                                text = { Text(model) },
+                                onClick = {
+                                    selectedModel = model
+                                    expanded = false
+                                    UIAgentAccessibilityService.instance?.updateAgent(model)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Task Input
+                OutlinedTextField(
+                    value = taskText,
+                    onValueChange = { taskText = it },
+                    label = { Text("Target Task") },
+                    placeholder = { Text("Enter task here...") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 150.dp),
+                    minLines = 5
+                )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Run Button
+                Button(
+                    onClick = {
+                        runTask(context, selectedModel, taskText)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("RUN TASK", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
-
-        val taskLabel = TextView(this).apply {
-            text = "Target Task:"
-            setPadding(0, 40, 0, 10)
-        }
-
-        val taskEditText = EditText(this).apply {
-            hint = "Enter task here..."
-            setText("go to contacts, and add a new contact John Smith with email johnsmith123@gmail.com")
-            isEnabled = true
-            minLines = 5
-            gravity = Gravity.TOP
-            setBackgroundResource(R.drawable.edit_text_border)
-            setPadding(20, 20, 20, 20)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ).apply {
-                setMargins(0, 0, 0, 40)
-            }
-        }
-
-        val runTaskButton = Button(this).apply {
-            text = "RUN TASK"
-            setOnClickListener {
-                val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val network = connectivityManager.activeNetwork
-                val capabilities = connectivityManager.getNetworkCapabilities(network)
-                val isOnline = capabilities != null && (
-                        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
-                
-                if (!isOnline) {
-                    Toast.makeText(this@MainActivity, "ERROR: No Internet Connection detected", Toast.LENGTH_LONG).show()
-                    Log.e("MainActivity", "Task failed to start: No internet connection.")
-                    return@setOnClickListener
-                }
-
-                val service = UIAgentAccessibilityService.instance
-                if (service != null) {
-                    val selectedModel = modelSpinner.selectedItem.toString()
-                    Log.i("MainActivity", "Starting task with model: $selectedModel")
-                    service.updateAgent(selectedModel)
-                    
-                    val task = taskEditText.text.toString()
-                    Log.i("MainActivity", "Task Description: $task")
-                    service.startAgentLoop(task)
-                    Toast.makeText(this@MainActivity, "Agent Started ($selectedModel): Processing task...", Toast.LENGTH_LONG).show()
-                    // Send app to background so agent can work on other apps
-                    val startMain = Intent(Intent.ACTION_MAIN)
-                    startMain.addCategory(Intent.CATEGORY_HOME)
-                    startMain.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    startActivity(startMain)
-                } else {
-                    Toast.makeText(this@MainActivity, "Please enable Accessibility Service first", Toast.LENGTH_SHORT).show()
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
-            }
-        }
-
-        layout.addView(statusTextView)
-        layout.addView(settingsButton)
-        layout.addView(apiSettingsButton)
-        layout.addView(modelLabel)
-        layout.addView(modelSpinner)
-        layout.addView(taskLabel)
-        layout.addView(taskEditText)
-        layout.addView(runTaskButton)
-
-        ViewCompat.setOnApplyWindowInsetsListener(layout) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(
-                50 + systemBars.left,
-                50 + systemBars.top,
-                50 + systemBars.right,
-                50 + systemBars.bottom
-            )
-            insets
-        }
-
-        setContentView(layout)
     }
 
-    override fun onResume() {
-        super.onResume()
-        if (::statusTextView.isInitialized) {
-            statusTextView.text = "Accessibility Service Enabled: ${isAccessibilityServiceEnabled(this)}"
-        }
+    private fun runTask(context: Context, model: String, task: String) {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork
+        val capabilities = connectivityManager.getNetworkCapabilities(network)
+        val isOnline = capabilities != null && (
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
         
-        // Debug: Auto-start if intent has AUTO_START
-        if (intent.getBooleanExtra("AUTO_START", false)) {
-            val service = UIAgentAccessibilityService.instance
-            if (service != null) {
-                val task = intent.getStringExtra("TASK") ?: "Test task"
-                service.startAgentLoop(task)
-                intent.removeExtra("AUTO_START")
-            }
+        if (!isOnline) {
+            Toast.makeText(context, "ERROR: No Internet Connection detected", Toast.LENGTH_LONG).show()
+            Log.e("MainActivity", "Task failed to start: No internet connection.")
+            return
+        }
+
+        val service = UIAgentAccessibilityService.instance
+        if (service != null) {
+            Log.i("MainActivity", "Starting task with model: $model")
+            service.updateAgent(model)
+            
+            Log.i("MainActivity", "Task Description: $task")
+            service.startAgentLoop(task)
+            Toast.makeText(context, "Agent Started ($model): Processing task...", Toast.LENGTH_LONG).show()
+            
+            val startMain = Intent(Intent.ACTION_MAIN)
+            startMain.addCategory(Intent.CATEGORY_HOME)
+            startMain.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            context.startActivity(startMain)
+        } else {
+            Toast.makeText(context, "Please enable Accessibility Service first", Toast.LENGTH_SHORT).show()
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
     }
 
     private fun isAccessibilityServiceEnabled(context: Context): Boolean {
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_GENERIC)
-        for (service in enabledServices) {
-            if (service.resolveInfo.serviceInfo.name == UIAgentAccessibilityService::class.java.name) {
-                return true
+        val service = context.packageName + "/" + UIAgentAccessibilityService::class.java.canonicalName
+        val enabled = Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0)
+        if (enabled == 1) {
+            val settingValue = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            if (settingValue != null) {
+                return settingValue.contains(service)
             }
         }
         return false
