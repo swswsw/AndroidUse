@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -53,6 +54,14 @@ import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
+import android.Manifest
+import android.content.pm.PackageManager
+import android.content.Intent
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import java.util.Locale
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -88,6 +97,12 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
 
     private var overlayX = 0f
     private var overlayY = 100f
+
+    var usedVoiceInput by mutableStateOf(false)
+    private var chatInputText by mutableStateOf("")
+    private var isListeningForVoiceInput by mutableStateOf(false)
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var tts: TextToSpeech? = null
 
     // Lifecycle components for ComposeView in Service
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -126,11 +141,141 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
         
         // Default model
         updateAgent("gemini-3.5-flash")
+        
+        initTts()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        try {
+            tts?.stop()
+            tts?.shutdown()
+        } catch (e: Exception) {
+            Log.e("UIAgentAccessibilityService", "Error shutting down TTS", e)
+        }
+        try {
+            speechRecognizer?.destroy()
+        } catch (e: Exception) {
+            Log.e("UIAgentAccessibilityService", "Error destroying SpeechRecognizer", e)
+        }
+    }
+
+    private fun initTts() {
+        try {
+            tts = TextToSpeech(this) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    val result = tts?.setLanguage(Locale.US)
+                    if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        Log.e("UIAgentAccessibilityService", "TTS Language is not supported")
+                    }
+                } else {
+                    Log.e("UIAgentAccessibilityService", "TTS Initialization failed")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("UIAgentAccessibilityService", "Error initializing TTS", e)
+        }
+    }
+
+    private fun speak(text: String) {
+        if (usedVoiceInput) {
+            Log.d("UIAgentAccessibilityService", "Speaking: $text")
+            try {
+                tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "AndroidUse_TTS")
+            } catch (e: Exception) {
+                Log.e("UIAgentAccessibilityService", "Error in speak()", e)
+            }
+        }
+    }
+
+    private fun toggleVoiceInput() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Microphone permission is required. Please grant it in MainActivity or Settings.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (isListeningForVoiceInput) {
+            stopListening()
+        } else {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                if (speechRecognizer == null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                }
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                }
+
+                speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        isListeningForVoiceInput = true
+                        updateOverlay(status = "Listening for voice input...")
+                    }
+
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {
+                        isListeningForVoiceInput = false
+                    }
+
+                    override fun onError(error: Int) {
+                        isListeningForVoiceInput = false
+                        val errorMsg = when (error) {
+                            SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized"
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
+                            SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                            else -> "Speech recognition error: $error"
+                        }
+                        updateOverlay(status = errorMsg)
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            chatInputText = matches[0]
+                            usedVoiceInput = true
+                            updateOverlay(status = "Ready")
+                        }
+                        isListeningForVoiceInput = false
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            chatInputText = matches[0]
+                        }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+
+                speechRecognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.e("UIAgentAccessibilityService", "Error starting speech recognition", e)
+                isListeningForVoiceInput = false
+            }
+        }
+    }
+
+    private fun stopListening() {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                speechRecognizer?.stopListening()
+            } catch (e: Exception) {
+                Log.e("UIAgentAccessibilityService", "Error stopping speech recognition", e)
+            }
+            isListeningForVoiceInput = false
+        }
     }
 
     fun updateAgent(modelName: String) {
@@ -166,9 +311,10 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
         }
     }
 
-    fun startAgentLoop(taskDescription: String) {
+    fun startAgentLoop(taskDescription: String, useVoice: Boolean = false) {
         if (isProcessing) return
         isProcessing = true
+        usedVoiceInput = useVoice
         currentStepCountInt = 0
         lastActionJson = null
         repeatCount = 0
@@ -251,6 +397,9 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
             if (thought.isNotBlank()) {
                 conversationHistory.add(ChatMessage(thought, false))
                 updateChatUI()
+                if (usedVoiceInput) {
+                    speak(thought)
+                }
             }
             val actionContent = JSONObject(json.toString()).apply { remove("thought") }.toString()
             
@@ -470,6 +619,19 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
     private fun stopWithNotification(message: String) {
         Log.w("UIAgentAccessibilityService", message)
         isProcessing = false
+        try {
+            stopListening()
+        } catch (e: Exception) {
+            Log.e("UIAgentAccessibilityService", "Error stopping listening in stopWithNotification", e)
+        }
+        if (usedVoiceInput) {
+            try {
+                tts?.stop()
+            } catch (e: Exception) {
+                Log.e("UIAgentAccessibilityService", "Error stopping TTS in stopWithNotification", e)
+            }
+            speak(message)
+        }
         // Removed hideOverlay() to allow user to see result
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -585,7 +747,6 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
 
     @Composable
     fun ChatContent() {
-        var chatInput by remember { mutableStateOf("") }
         val scrollState = rememberScrollState()
         
         LaunchedEffect(conversationHistory.size) {
@@ -617,10 +778,27 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 8.dp)
             ) {
+                IconButton(
+                    onClick = { toggleVoiceInput() },
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = if (isListeningForVoiceInput) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        if (isListeningForVoiceInput) Icons.Default.Stop else Icons.Default.Mic,
+                        contentDescription = "Voice Input",
+                        tint = if (isListeningForVoiceInput) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
                 TextField(
-                    value = chatInput,
-                    onValueChange = { chatInput = it },
-                    placeholder = { Text("Send instruction...", fontSize = 12.sp) },
+                    value = chatInputText,
+                    onValueChange = { 
+                        chatInputText = it
+                        usedVoiceInput = false
+                    },
+                    placeholder = { Text(if (isListeningForVoiceInput) "Listening..." else "Send instruction...", fontSize = 12.sp) },
                     modifier = Modifier.weight(1f),
                     colors = TextFieldDefaults.colors(
                         focusedTextColor = androidx.compose.ui.graphics.Color.White,
@@ -629,19 +807,20 @@ class UIAgentAccessibilityService : AccessibilityService(), LifecycleOwner, View
                 )
                 IconButton(onClick = {
                     conversationHistory.clear()
+                    chatInputText = ""
                     updateChatUI()
                     Toast.makeText(this@UIAgentAccessibilityService, "Chat Context Cleared", Toast.LENGTH_SHORT).show()
                 }) {
                     Icon(Icons.Default.Delete, contentDescription = "Clear", tint = androidx.compose.ui.graphics.Color.Gray)
                 }
                 IconButton(onClick = {
-                    if (chatInput.isNotBlank()) {
-                        val text = chatInput
+                    if (chatInputText.isNotBlank()) {
+                        val text = chatInputText
                         conversationHistory.add(ChatMessage(text, true))
-                        chatInput = ""
+                        chatInputText = ""
                         updateChatUI()
                         if (!isProcessing) {
-                            startAgentLoop(text)
+                            startAgentLoop(text, usedVoiceInput)
                         }
                     }
                 }) {

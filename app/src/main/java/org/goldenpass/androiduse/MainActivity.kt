@@ -1,15 +1,22 @@
 package org.goldenpass.androiduse
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,6 +24,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
@@ -94,6 +104,106 @@ class MainActivity : ComponentActivity() {
         var selectedModel by remember { mutableStateOf(models[0]) }
         var taskText by remember { mutableStateOf("go to contacts, and add a new contact John Smith with email johnsmith123@gmail.com") }
         var expanded by remember { mutableStateOf(false) }
+
+        var hasRecordAudioPermission by remember {
+            mutableStateOf(
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+            )
+        }
+
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission(),
+            onResult = { isGranted ->
+                hasRecordAudioPermission = isGranted
+                if (!isGranted) {
+                    Toast.makeText(context, "Microphone permission is required for voice input", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+
+        var isListening by remember { mutableStateOf(false) }
+        var isVoiceModeEnabled by remember { mutableStateOf(false) }
+        var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                speechRecognizer?.destroy()
+            }
+        }
+
+        fun startListening() {
+            if (!hasRecordAudioPermission) {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                return
+            }
+
+            if (isListening) {
+                try {
+                    speechRecognizer?.stopListening()
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Error stopping listening", e)
+                }
+                isListening = false
+                return
+            }
+
+            if (speechRecognizer == null) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+            }
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            }
+
+            speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    isListening = true
+                }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {
+                    isListening = false
+                }
+                override fun onError(error: Int) {
+                    isListening = false
+                    val errorMsg = when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized"
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer is busy"
+                        SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                        else -> "Speech recognition error: $error"
+                    }
+                    Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
+                }
+                override fun onResults(results: Bundle?) {
+                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!matches.isNullOrEmpty()) {
+                        taskText = matches[0]
+                        isVoiceModeEnabled = true
+                    }
+                    isListening = false
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!matches.isNullOrEmpty()) {
+                        taskText = matches[0]
+                    }
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+
+            try {
+                speechRecognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error starting listening", e)
+                isListening = false
+            }
+        }
 
         Scaffold(
             topBar = {
@@ -177,24 +287,64 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Task Input
-                OutlinedTextField(
-                    value = taskText,
-                    onValueChange = { taskText = it },
-                    label = { Text("Target Task") },
-                    placeholder = { Text("Enter task here...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 150.dp),
-                    minLines = 5
-                )
+                // Task Input with Voice Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = taskText,
+                        onValueChange = { taskText = it },
+                        label = { Text("Target Task") },
+                        placeholder = { Text("Enter task here...") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 150.dp),
+                        minLines = 5
+                    )
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        IconButton(
+                            onClick = { startListening() },
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = if (isListening) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                            ),
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Icon(
+                                if (isListening) Icons.Default.Stop else Icons.Default.Mic,
+                                contentDescription = "Voice Input"
+                            )
+                        }
+                        if (isListening) {
+                            Text("Listening...", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+
+                // Voice Mode Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Voice Mode (Speak Responses)", fontWeight = FontWeight.Medium)
+                    Switch(
+                        checked = isVoiceModeEnabled,
+                        onCheckedChange = { isVoiceModeEnabled = it }
+                    )
+                }
 
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Run Button
                 Button(
                     onClick = {
-                        runTask(context, selectedModel, taskText)
+                        runTask(context, selectedModel, taskText, isVoiceModeEnabled)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -209,7 +359,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun runTask(context: Context, model: String, task: String) {
+    private fun runTask(context: Context, model: String, task: String, useVoice: Boolean = false) {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = connectivityManager.activeNetwork
         val capabilities = connectivityManager.getNetworkCapabilities(network)
@@ -230,7 +380,7 @@ class MainActivity : ComponentActivity() {
             service.updateAgent(model)
             
             Log.i("MainActivity", "Task Description: $task")
-            service.startAgentLoop(task)
+            service.startAgentLoop(task, useVoice)
             Toast.makeText(context, "Agent Started ($model): Processing task...", Toast.LENGTH_LONG).show()
             
             val startMain = Intent(Intent.ACTION_MAIN)
