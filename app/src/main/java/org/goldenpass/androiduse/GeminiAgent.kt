@@ -61,6 +61,7 @@ class GeminiAgent(private val apiKey: String, modelName: String = "gemini-3.5-fl
         
         IMPORTANT RULES:
         - Respond ONLY with the JSON object. No other text.
+        - Ensure the JSON is complete and well-formed. Do not truncate the response.
         - Be precise with coordinates.
         - If the task is finished, return the "done" action.
     """.trimIndent()
@@ -175,11 +176,47 @@ class GeminiAgent(private val apiKey: String, modelName: String = "gemini-3.5-fl
     }
 
     private fun denormalizeResponse(rawResponse: String?, screenWidth: Int, screenHeight: Int): String? {
-        if (rawResponse == null) return null
+        if (rawResponse.isNullOrBlank()) return null
         try {
-            val jsonStr = if (rawResponse.contains("{")) {
-                rawResponse.substring(rawResponse.indexOf("{"), rawResponse.lastIndexOf("}") + 1)
-            } else rawResponse
+            var jsonStr = rawResponse.trim()
+            
+            // Handle cases where the model might wrap JSON in backticks
+            if (jsonStr.startsWith("```json")) {
+                jsonStr = jsonStr.removePrefix("```json").removeSuffix("```").trim()
+            } else if (jsonStr.startsWith("```")) {
+                jsonStr = jsonStr.removePrefix("```").removeSuffix("```").trim()
+            }
+
+            val start = jsonStr.indexOf("{")
+            val end = jsonStr.lastIndexOf("}")
+            
+            if (start == -1) {
+                Log.w("GeminiAgent", "No JSON object found in response: $jsonStr")
+                return rawResponse
+            }
+
+            // If we found a start but no end, or the end is before the start,
+            // the JSON might be truncated.
+            if (end == -1 || end < start) {
+                Log.w("GeminiAgent", "Truncated JSON detected, attempting to fix: $jsonStr")
+                jsonStr = jsonStr.substring(start)
+                // Basic heuristic: append closing braces until it parses or we reach a limit
+                for (i in 1..3) {
+                    try {
+                        jsonStr += "}"
+                        JSONObject(jsonStr)
+                        Log.i("GeminiAgent", "Successfully fixed truncated JSON: $jsonStr")
+                        break
+                    } catch (_: Exception) {
+                        if (i == 3) {
+                            Log.e("GeminiAgent", "Failed to fix truncated JSON after $i attempts")
+                            return rawResponse
+                        }
+                    }
+                }
+            } else {
+                jsonStr = jsonStr.substring(start, end + 1)
+            }
 
             val json = JSONObject(jsonStr)
             val action = json.optString("action")
